@@ -8,11 +8,12 @@
 %%%-------------------------------------------------------------------
 -module(gen_statem_server).
 -author("vttek").
-
+-include("package.hrl").
 -behaviour(gen_statem).
+-define(CALLBACK_MODE, state_functions).
 
 %% API
--export([start_link/0, create_package/4, solve_cmd/2, solve_state/2, check_format_MsIsdn/2, listen/1]).
+-export([start_link/1, solve_cmd/2, check_format_MsIsdn/1, listen/1]).
 
 %% gen_statem callbacks
 -export([
@@ -22,19 +23,24 @@
   handle_event/4,
   terminate/3,
   code_change/4,
-  callback_mode/0
+  callback_mode/0,
+  idle/3,
+  ready/3,
+  select/3,
+  abc/0
 ]).
 -define(SERVER, ?MODULE).
--define(INIT_STATE, "INIT").
--define(READY_STATE, "READY").
--define(SELECT_STATE, "SELECT").
+-define(READY_STATE, ready).
+-define(SELECT_STATE, select).
+-define(INIT_STATE, idle).
+-define(CLOSED_STATE, closed).
 -define(AUTHEN_CMD, "AUTHEN").
 -define(INSERT_CMD, "INSERT").
 -define(COMMIT_CMD, "COMMIT").
 -define(SELECT_CMD, "SELECT").
 -define(TCP_OPTIONS, [binary, {packet, 0}, {active, false}, {reuseaddr, true}]).
+-define(MODULE_NAME, gen_statem_server).
 -record(state, {}).
--record(package, {cmdCode = "None", tlv = #{msisdn => 0, key => "None", name => "None"}}).
 
 
 %%%===================================================================
@@ -50,8 +56,11 @@
 %% @spec start_link() -> {ok, Pid} | ignore | {error, Error}
 %% @end
 %%--------------------------------------------------------------------
-start_link() ->
-  gen_statem:start_link({local, ?SERVER}, ?MODULE, [], []).
+start_link(Args) ->
+  io:format("Start link~n", []),
+  _Package = #package{},
+  gen_statem:start_link({local, ?SERVER}, ?MODULE, Args, []),
+  abc().
 
 %%%===================================================================
 %%% gen_statem callbacks
@@ -70,9 +79,30 @@ start_link() ->
 %%                     {stop, StopReason}
 %% @end
 %%--------------------------------------------------------------------
-init([]) ->
-  {ok, ?INIT_STATE, {?INIT_STATE, []}}.
 
+abc() ->
+  gen_statem:cast(?MODULE, idle).
+
+init(Args) ->
+  io:format("start init ~p ~n", [Args]),
+%%  gen_statem:cast(?MODULE_NAME, idle),
+  {ok, ?INIT_STATE, Args}.
+
+idle(cast, _, Package) ->
+  io:format("idle ~n", []),
+  case check_format_MsIsdn(Package) of
+    {ok, continue} ->
+      case Package#package.cmdCode of
+        ?AUTHEN_CMD ->
+          {next_state, ?READY_STATE, Package}
+      end;
+    {error} ->
+      closed()
+  end,
+  {next_state, ?INIT_STATE, Package};
+
+idle(call, _, Package) ->
+  {next_state, ?INIT_STATE, Package}.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -84,7 +114,7 @@ init([]) ->
 %% @end
 %%--------------------------------------------------------------------
 callback_mode() ->
-  handle_event_function.
+  ?CALLBACK_MODE.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -124,10 +154,11 @@ format_status(_Opt, [_PDict, _StateName, _State]) ->
 %% @end
 %%--------------------------------------------------------------------
 state_name(_EventType, _EventContent, State) ->
-  if is_map(State) ->
-    solve_state(maps:get(state, State), maps:get(package, State)),
-    {next_state, maps:get(state, State), maps:get(package, State)}
-  end.
+%%  if is_map(State) ->
+%%    {next_state, maps:get(state, State), maps:get(package, State)}
+%%  end.
+  NextStateName = next_state,
+  {next_state, NextStateName, State}.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -169,7 +200,6 @@ handle_event(_EventType, _EventContent, _StateName, State) ->
 %%--------------------------------------------------------------------
 terminate(_Reason, _StateName, _State) ->
   ok.
-
 %%--------------------------------------------------------------------
 %% @private
 %% @doc
@@ -194,74 +224,92 @@ code_change(_OldVsn, StateName, State, _Extra) ->
 
 
 
-create_package(CmdCode, MsIsdn, Key, Name) ->
-  #package{cmdCode = CmdCode, tlv = #{msisdn => MsIsdn, key => Key, name => Name}}.
 
-
-check_format_MsIsdn(Package, CurrentState) when is_record(Package, package) ->
-  A = string:str(integer_to_list(map:get(msisdn, Package#package.tlv)), "098"),
+closed() ->
+  {"ERROR", #{resultCode => "NA"}}.
+check_format_MsIsdn(Package) when is_record(Package, package) ->
+  io:format("check package: ~w~n", [Package]),
+  Misidn = maps:get(msisdn, Package#package.tlv),
+  io:format("Msisdn: ~p", [Misidn]),
+  A = string:str(integer_to_list(Misidn), "198"),
+  io:format("Msisdn: ~p", [Misidn]),
+  io:format("A ~p", [A]),
   if
     A == 1 ->
-      solve_state(CurrentState, Package)
-  end,
-  {"ERROR", #{resultCode => "NA"}}.
-
+      {ok, continue};
+    true ->
+      {error}
+  end.
+%%{ok, Socket} = gen_tcp:connect({127,0,0,1},1111,[]).
+%%gen_tcp:send(Socket,gen_statem_server:create_package("AUTHEN",1987654321,vttek,username)).
 solve_cmd(CurrentState, Package) ->
+  io:format("Current state is: ~w~n", [CurrentState]),
   case Package#package.cmdCode of
     ?AUTHEN_CMD ->
-      Value = map:get(key, Package#package.tlv),
+      Value = maps:get(key, Package#package.tlv),
       if
         Value =:= "vttek" ->
-          {#{msisdn => map:get(msisdn, Package#package.tlv), resultCode => "OK", statusSubcriber => "OK"}, closedPackage}
+          {#{msisdn => maps:get(msisdn, Package#package.tlv), resultCode => "OK", statusSubcriber => "OK"}, closedPackage}
       end,
-      #{msisdn => map:get(msisdn, Package#package.tlv), resultCode => "NOK"},
+      #{msisdn => maps:get(msisdn, Package#package.tlv), resultCode => "NOK"},
       closedPackage,
       gen_statem:call(?MODULE, #{state => ?READY_STATE, package =>Package});
     ?SELECT_CMD ->
       if CurrentState =/= ?SELECT_STATE ->
-        {#{msisdn => map:get(msisdn, Package#package.tlv), resultCode => "NOK"}, closedPackage}
+        {#{msisdn => maps:get(msisdn, Package#package.tlv), resultCode => "NOK"}, closedPackage}
       end,
-      #{msisdn => map:get(msisdn, Package#package.tlv), resultCode => "OK", name => username},
+      #{msisdn => maps:get(msisdn, Package#package.tlv), resultCode => "OK", name => username},
       closedPackage;
     ?INSERT_CMD ->
       if
         CurrentState =/= ?READY_STATE ->
-          {#{msisdn => map:get(msisdn, Package#package.tlv), resultCode => "NOK"}, closedPackage}
+          {#{msisdn => maps:get(msisdn, Package#package.tlv), resultCode => "NOK"}, closedPackage}
       end,
-      #{msisdn => map:get(msisdn, Package#package.tlv), resultCode => "NOK"}, closedPackage,
+      #{msisdn => maps:get(msisdn, Package#package.tlv), resultCode => "NOK"}, closedPackage,
       insert_subcriber(Package);
     ?COMMIT_CMD ->
       if
         CurrentState =/= ?READY_STATE ->
-          {#{msisdn => map:get(msisdn, Package#package.tlv), resultCode => "NOK"}, closedPackage}
+          {#{msisdn => maps:get(msisdn, Package#package.tlv), resultCode => "NOK"}, closedPackage}
       end,
-      solve_state(?SELECT_STATE, Package)
+      %% send to select state
+      gen_statem:cast(?MODULE, Package)
   end.
-solve_state(CurrentState, Package) ->
-  case CurrentState of
-    ?INIT_STATE ->
-      solve_cmd(CurrentState, Package);
-    ?READY_STATE ->
-      solve_cmd(CurrentState, Package);
-    ?SELECT_STATE ->
+
+ready(cast, _, {CurrentState, Package}) ->
+  io:format("ready ~n", []),
+  case check_format_MsIsdn(Package) of
+    {ok, continue} ->
       solve_cmd(CurrentState, Package)
-  end.
+  end,
+  gen_tcp:send(closed_package),
+  {next_State, ?SELECT_STATE, Package}.
 
-
+select(cast, _, {CurrentState, Package}) ->
+  io:format("select ~n", []),
+  case check_format_MsIsdn(Package) of
+    {ok, continue} ->
+      solve_cmd(CurrentState, Package)
+  end,
+  gen_tcp:send(closed_package).
 listen(Port) ->
   {ok, LSocket} = gen_tcp:listen(Port, ?TCP_OPTIONS),
   accept(LSocket).
 
 accept(LSocket) ->
+  io:format("accept~n", []),
   {ok, Socket} = gen_tcp:accept(LSocket),
-  start_link(),
-  accept(LSocket).
+  io:format("Socket ~p~n", [Socket]),
+  loop(Socket).
+%%  accept(LSocket).
 
 loop(Socket) ->
   case gen_tcp:recv(Socket, 0) of
-    {ok, Package} ->
-      solve_state(?INIT_STATE, Package),
-      loop(Socket);
+    {ok, Bin} ->
+      io:format("Have receive data: ~w~n", [Bin]),
+      Package = binary_to_term(Bin),
+      start_link(Package);
+%%      gen_statem:call(?MODULE, #{state => ?INIT_STATE, package =>Package});
     {error, closed} ->
       ok
   end.
