@@ -10,7 +10,9 @@
 -author("vttek").
 -include("package.hrl").
 -behaviour(gen_statem).
--define(CALLBACK_MODE, state_functions).
+-define(CALLBACK_STATE_FUNCTION_MODE, state_functions).
+-define(CALLBACK_HANDLE_FUNCTION_MODE, handle_event_function).
+
 
 %% API
 -export([start_link/1, solve_cmd/2, check_format_MsIsdn/1, listen/1]).
@@ -27,7 +29,7 @@
   idle/3,
   ready/3,
   select/3,
-  abc/0
+  start_init_state/0
 ]).
 -define(SERVER, ?MODULE).
 -define(READY_STATE, ready).
@@ -60,7 +62,7 @@ start_link(Args) ->
   io:format("Start link~n", []),
   _Package = #package{},
   gen_statem:start_link({local, ?SERVER}, ?MODULE, Args, []),
-  abc().
+  start_init_state().
 
 %%%===================================================================
 %%% gen_statem callbacks
@@ -80,8 +82,12 @@ start_link(Args) ->
 %% @end
 %%--------------------------------------------------------------------
 
-abc() ->
+start_init_state() ->
   gen_statem:cast(?MODULE, idle).
+start_ready_state() ->
+  gen_statem:cast(?MODULE, ready).
+start_select_state() ->
+  gen_statem:cast(?MODULE, select).
 
 init(Args) ->
   io:format("start init ~p ~n", [Args]),
@@ -114,7 +120,8 @@ idle(call, _, Package) ->
 %% @end
 %%--------------------------------------------------------------------
 callback_mode() ->
-  ?CALLBACK_MODE.
+%%  ?CALLBACK_STATE_FUNCTION_MODE.
+  ?CALLBACK_HANDLE_FUNCTION_MODE.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -183,10 +190,42 @@ state_name(_EventType, _EventContent, State) ->
 %%                   {keep_state_and_data, Actions}
 %% @end
 %%--------------------------------------------------------------------
-handle_event(_EventType, _EventContent, _StateName, State) ->
-  NextStateName = the_next_state_name,
-  {next_state, NextStateName, State}.
+%%handle_event(_EventType, _EventContent, _StateName, State) ->
+%%  NextStateName = the_next_state_name,
+%%  {next_state, NextStateName, State}.
 
+
+handle_event(cast, _, State, Package) ->
+  case State of
+    ?INIT_STATE ->
+      io:format("idle ~n", []),
+      case check_format_MsIsdn(Package) of
+        {ok, continue} ->
+          case Package#package.cmdCode of
+            ?AUTHEN_CMD ->
+              start_ready_state(),
+              {next_state, ?READY_STATE, Package}
+          end;
+        {error} ->
+          closed()
+      end;
+    ?READY_STATE ->
+      io:format("ready ~n", []),
+      case check_format_MsIsdn(Package) of
+        {ok, continue} ->
+          solve_cmd(?READY_STATE, Package)
+      end,
+      gen_tcp:send(closed_package);
+    ?SELECT_STATE ->
+      io:format("select ~n", []),
+      case check_format_MsIsdn(Package) of
+        {ok, continue} ->
+          solve_cmd(?SELECT_STATE, Package)
+      end,
+      gen_tcp:send(closed_package);
+    ?CLOSED_STATE ->
+      {"ERROR", #{resultCode => "NA"}}
+  end.
 %%--------------------------------------------------------------------
 %% @private
 %% @doc
@@ -247,33 +286,42 @@ solve_cmd(CurrentState, Package) ->
   case Package#package.cmdCode of
     ?AUTHEN_CMD ->
       Value = maps:get(key, Package#package.tlv),
+      io:format("Value of key ~p~n", [Value]),
       if
         Value =:= "vttek" ->
-          {#{msisdn => maps:get(msisdn, Package#package.tlv), resultCode => "OK", statusSubcriber => "OK"}, closedPackage}
+          {#{msisdn => maps:get(msisdn, Package#package.tlv), resultCode => "OK", statusSubcriber => "OK"}, closedPackage};
+        true ->
+          ok
       end,
       #{msisdn => maps:get(msisdn, Package#package.tlv), resultCode => "NOK"},
       closedPackage,
       gen_statem:call(?MODULE, #{state => ?READY_STATE, package =>Package});
     ?SELECT_CMD ->
       if CurrentState =/= ?SELECT_STATE ->
-        {#{msisdn => maps:get(msisdn, Package#package.tlv), resultCode => "NOK"}, closedPackage}
+        {#{msisdn => maps:get(msisdn, Package#package.tlv), resultCode => "NOK"}, closedPackage};
+        true ->
+          ok
       end,
       #{msisdn => maps:get(msisdn, Package#package.tlv), resultCode => "OK", name => username},
       closedPackage;
     ?INSERT_CMD ->
       if
         CurrentState =/= ?READY_STATE ->
-          {#{msisdn => maps:get(msisdn, Package#package.tlv), resultCode => "NOK"}, closedPackage}
+          {#{msisdn => maps:get(msisdn, Package#package.tlv), resultCode => "NOK"}, closedPackage};
+        true ->
+          ok
       end,
       #{msisdn => maps:get(msisdn, Package#package.tlv), resultCode => "NOK"}, closedPackage,
       insert_subcriber(Package);
     ?COMMIT_CMD ->
       if
         CurrentState =/= ?READY_STATE ->
-          {#{msisdn => maps:get(msisdn, Package#package.tlv), resultCode => "NOK"}, closedPackage}
+          {#{msisdn => maps:get(msisdn, Package#package.tlv), resultCode => "NOK"}, closedPackage};
+        true ->
+          ok
       end,
       %% send to select state
-      gen_statem:cast(?MODULE, Package)
+      gen_statem:cast(?MODULE, select)
   end.
 
 ready(cast, _, {CurrentState, Package}) ->
