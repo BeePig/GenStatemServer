@@ -8,7 +8,7 @@
 %%%-------------------------------------------------------------------
 -module(client).
 -author("vttek").
--include("package.hrl").
+-include("header.hrl").
 %% API
 -export([connect/1, send/5, request_data/2, request_package/5, create_package/4]).
 

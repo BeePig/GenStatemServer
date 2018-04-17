@@ -8,7 +8,7 @@
 %%%-------------------------------------------------------------------
 -module(gen_statem_server).
 -author("vttek").
--include("package.hrl").
+-include("header.hrl").
 -behaviour(gen_statem).
 -define(CALLBACK_MODE, state_functions).
 
